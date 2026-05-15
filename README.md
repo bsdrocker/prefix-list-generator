@@ -1,20 +1,24 @@
 # bgpq4-arista
 
-A tiny Flask service that wraps [`bgpq4`](https://github.com/bgp/bgpq4) and returns
-prefix-lists in **Arista EOS plain-text syntax** so Arista switches can pull them
-dynamically with `ip prefix-list NAME source http://...`.
+A tiny Flask service that wraps [`bgpq4`](https://github.com/bgp/bgpq4) and
+returns prefix-list entries in the **`seq N permit X/Y [le N]` body format**
+that Arista EOS expects when sourcing a prefix-list over HTTP
+(`ip prefix-list NAME` → `source http://...`).
 
 Similar in spirit to [bgpq-proxy](https://github.com/peering-manager/bgpq-proxy),
-but instead of JSON the response body is exactly what an Arista switch wants to
-see when it sources a prefix-list over HTTP.
+but tailored to Arista's source-http loader instead of returning JSON.
 
 ## How it works
 
-bgpq4's default output is Cisco IOS-style `ip prefix-list NAME [seq N] permit X/Y`
-lines (and `ipv6 prefix-list ...` lines with `-6`). Arista EOS accepts that
-syntax verbatim, both when pasted into the CLI and when fetched via the
-`source http://...` feature, so this service just runs `bgpq4` and returns
-the output as `text/plain`.
+When Arista sources a prefix-list over HTTP, the switch already knows the
+list name (from the parent `ip prefix-list NAME` command) and expects the
+HTTP body to contain only the entries — `seq N permit X/Y [le N]` lines —
+not bgpq4's default `ip prefix-list NAME permit ...` form.
+
+So this service runs `bgpq4`, drops the `no ip prefix-list NAME` header,
+strips the `ip|ipv6 prefix-list NAME ` prefix from each line, and prepends
+sequence numbers starting at 1. The result is returned as `text/plain` and
+goes straight into the switch's prefix-list when refreshed.
 
 ## Endpoints
 
@@ -64,25 +68,24 @@ All knobs are environment variables (see `docker-compose.yml`):
 | `BGPQ4_BIN`          | `bgpq4`        | Path to bgpq4 binary.                                                   |
 | `PORT`               | `8080`         | Listen port.                                                            |
 
-With the defaults you get output like:
-
-```
-ip prefix-list PEER-HE permit 4.7.0.0/16 le 24
-ipv6 prefix-list PEER-HE-V6 permit 2001:470::/32 le 48
-```
-
-i.e. the AS-SET's aggregates plus any more-specifics down to /24 (v4) and /48 (v6).
+With the defaults you get entries like `permit 4.7.0.0/16 le 24` for v4 and
+`permit 2001:470::/32 le 48` for v6 — the AS-SET's aggregates plus any
+more-specifics down to /24 (v4) and /48 (v6).
 
 ## Example response
 
 ```
 $ curl -s http://localhost:8080/arista/PEER-HE/AS-HURRICANE | head
-no ip prefix-list PEER-HE
-ip prefix-list PEER-HE permit 4.7.6.0/24
-ip prefix-list PEER-HE permit 5.39.96.0/19
-ip prefix-list PEER-HE permit 8.7.198.0/24
+seq 1 permit 4.7.0.0/16 le 24
+seq 2 permit 5.39.96.0/19 le 24
+seq 3 permit 8.7.198.0/24
+seq 4 permit 12.0.0.0/8 le 24
 ...
 ```
+
+Note the absence of `ip prefix-list NAME` on each line — that's intentional.
+Arista's source-http loader prepends it from the parent declaration, so the
+body returned here must contain only the entries.
 
 ## Arista EOS config example
 

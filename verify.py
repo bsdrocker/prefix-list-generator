@@ -165,47 +165,106 @@ def main() -> int:
 
     print()
     print("=" * 70)
-    print("5. bgpq4 default output is Arista-compatible (line-by-line check)")
+    print("5. _arista_format transforms bgpq4 output -> source-http body")
     print("=" * 70)
 
-    # bgpq4's default format. This is what bgpq4 actually emits for
-    #   bgpq4 -l EXAMPLE AS-EXAMPLE
-    # (modulo the actual prefixes). Arista EOS accepts each of these line
-    # forms verbatim, both interactively and when sourced over HTTP.
-    sample_v4 = """no ip prefix-list EXAMPLE
-ip prefix-list EXAMPLE permit 192.0.2.0/24
-ip prefix-list EXAMPLE permit 198.51.100.0/24
-ip prefix-list EXAMPLE permit 203.0.113.0/24 le 25
-ip prefix-list EXAMPLE permit 4.7.0.0/16 le 24
-"""
-    sample_v6 = """no ipv6 prefix-list EXAMPLE-V6
-ipv6 prefix-list EXAMPLE-V6 permit 2001:db8::/32
-ipv6 prefix-list EXAMPLE-V6 permit 2001:db8:1::/48 le 64
-ipv6 prefix-list EXAMPLE-V6 permit 2001:470::/32 le 48
-"""
+    # Extract _arista_format the same way we extracted _parse_max_len: pull the
+    # function source out of app.py and exec it without triggering flask imports.
+    tree5 = ast.parse(SRC)
+    fmt_src = None
+    for node in tree5.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_arista_format":
+            fmt_src = ast.get_source_segment(SRC, node)
+            break
+    if fmt_src is None:
+        case("_arista_format present", False); failures += 1
+        fmt = None
+    else:
+        ns = {}
+        exec(fmt_src, ns)
+        fmt = ns["_arista_format"]
 
-    # Arista EOS prefix-list line grammar (per the Configuration Guide):
-    #   [no] ip prefix-list NAME [seq N] permit|deny PREFIX/LEN [ge N] [le N]
-    #   [no] ipv6 prefix-list NAME [seq N] permit|deny PREFIX/LEN [ge N] [le N]
-    arista_v4 = re.compile(
-        r"^(no\s+)?ip\s+prefix-list\s+[A-Za-z0-9_\-]+"
-        r"(\s+seq\s+\d+)?"
-        r"(\s+(permit|deny)\s+\d+\.\d+\.\d+\.\d+/\d+"
-        r"(\s+ge\s+\d+)?(\s+le\s+\d+)?)?\s*$"
+    # Representative bgpq4 stdout for `bgpq4 -A -R 24 -l EXAMPLE AS-EXAMPLE`.
+    bgpq4_v4 = (
+        "no ip prefix-list EXAMPLE\n"
+        "ip prefix-list EXAMPLE permit 192.0.2.0/24\n"
+        "ip prefix-list EXAMPLE permit 198.51.100.0/24\n"
+        "ip prefix-list EXAMPLE permit 4.7.0.0/16 le 24\n"
     )
-    arista_v6 = re.compile(
-        r"^(no\s+)?ipv6\s+prefix-list\s+[A-Za-z0-9_\-]+"
-        r"(\s+seq\s+\d+)?"
-        r"(\s+(permit|deny)\s+[0-9a-fA-F:]+/\d+"
-        r"(\s+ge\s+\d+)?(\s+le\s+\d+)?)?\s*$"
+    expected_v4 = (
+        "seq 1 permit 192.0.2.0/24\n"
+        "seq 2 permit 198.51.100.0/24\n"
+        "seq 3 permit 4.7.0.0/16 le 24\n"
     )
 
-    for line in sample_v4.strip().splitlines():
-        if not case(f"v4 line valid Arista syntax: {line!r}", bool(arista_v4.match(line))):
+    bgpq4_v6 = (
+        "no ipv6 prefix-list EXAMPLE-V6\n"
+        "ipv6 prefix-list EXAMPLE-V6 permit 2001:db8::/32\n"
+        "ipv6 prefix-list EXAMPLE-V6 permit 2001:470::/32 le 48\n"
+    )
+    expected_v6 = (
+        "seq 1 permit 2001:db8::/32\n"
+        "seq 2 permit 2001:470::/32 le 48\n"
+    )
+
+    if fmt is not None:
+        got_v4 = fmt(bgpq4_v4, "ipv4")
+        if not case("v4 format produces exact expected body", got_v4 == expected_v4,
+                    f"\nexpected:\n{expected_v4!r}\ngot:\n{got_v4!r}"):
             failures += 1
-    for line in sample_v6.strip().splitlines():
-        if not case(f"v6 line valid Arista syntax: {line!r}", bool(arista_v6.match(line))):
+
+        got_v6 = fmt(bgpq4_v6, "ipv6")
+        if not case("v6 format produces exact expected body", got_v6 == expected_v6,
+                    f"\nexpected:\n{expected_v6!r}\ngot:\n{got_v6!r}"):
             failures += 1
+
+        # Header line is dropped
+        if not case("'no ip prefix-list NAME' header is dropped",
+                    "no ip prefix-list" not in fmt(bgpq4_v4, "ipv4")):
+            failures += 1
+
+        # Seq numbers start at 1 and increment by 1
+        seqs = re.findall(r"^seq (\d+) ", fmt(bgpq4_v4, "ipv4"), re.MULTILINE)
+        if not case("seq numbers are 1,2,3,…", seqs == ["1", "2", "3"],
+                    f"got: {seqs}"):
+            failures += 1
+
+        # Empty bgpq4 output -> empty body, no traceback
+        if not case("empty input -> empty output", fmt("", "ipv4") == ""):
+            failures += 1
+
+        # Unrecognized line gets dropped silently
+        weird = "ip prefix-list X permit 1.2.3.0/24\nlol garbage\n"
+        if not case("garbage line dropped, valid line kept",
+                    fmt(weird, "ipv4") == "seq 1 permit 1.2.3.0/24\n"):
+            failures += 1
+
+        # Wrong family for the data: v6 bgpq4 output asked to be parsed as v4
+        # should yield empty (we only strip the matching prefix family)
+        if not case("family mismatch -> empty (defensive)",
+                    fmt(bgpq4_v6, "ipv4") == ""):
+            failures += 1
+
+    print()
+    print("=" * 70)
+    print("5b. Formatter output is valid Arista source-http body grammar")
+    print("=" * 70)
+    # Arista source-http body grammar: `seq N permit|deny PREFIX/LEN [ge N] [le N]`
+    body_v4 = re.compile(
+        r"^seq\s+\d+\s+(permit|deny)\s+\d+\.\d+\.\d+\.\d+/\d+"
+        r"(\s+ge\s+\d+)?(\s+le\s+\d+)?\s*$"
+    )
+    body_v6 = re.compile(
+        r"^seq\s+\d+\s+(permit|deny)\s+[0-9a-fA-F:]+/\d+"
+        r"(\s+ge\s+\d+)?(\s+le\s+\d+)?\s*$"
+    )
+    if fmt is not None:
+        for line in fmt(bgpq4_v4, "ipv4").strip().splitlines():
+            if not case(f"v4 body line: {line!r}", bool(body_v4.match(line))):
+                failures += 1
+        for line in fmt(bgpq4_v6, "ipv6").strip().splitlines():
+            if not case(f"v6 body line: {line!r}", bool(body_v6.match(line))):
+                failures += 1
 
     print()
     print("=" * 70)

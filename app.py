@@ -1,15 +1,19 @@
 """
 bgpq4 -> Arista prefix-list HTTP front end.
 
-Returns plain-text Arista EOS prefix-list config suitable for use with:
+Returns plain-text Arista EOS prefix-list *body* suitable for use with:
 
     ip prefix-list NAME
        source http://<this-server>:<port>/arista/NAME/AS-SET
 
-bgpq4's default output is Cisco IOS-style `ip prefix-list ...` lines, which
-Arista EOS accepts verbatim. For IPv6 we pass -6 and bgpq4 emits
-`ipv6 prefix-list ...` lines, which Arista also accepts via
-`ipv6 prefix-list NAME ; source http://...`.
+When Arista sources a prefix-list over HTTP, the switch already knows the
+list name (declared by the parent `ip prefix-list NAME` command), so the
+HTTP body must contain only the entries — `seq N permit X/Y [le N]` lines —
+not the full `ip prefix-list NAME permit ...` form that bgpq4 emits.
+
+This service runs bgpq4 and reformats its output accordingly: drops the
+`no ip prefix-list NAME` header, strips the `ip|ipv6 prefix-list NAME `
+prefix from each entry, and prepends a sequence number starting at 1.
 """
 
 import os
@@ -135,6 +139,46 @@ def _run_bgpq4(name: str, as_set: str, family: str) -> str:
     return result.stdout
 
 
+def _arista_format(raw: str, family: str) -> str:
+    """Convert bgpq4 default output into Arista source-http body format.
+
+    bgpq4 emits, for v4:
+        no ip prefix-list NAME
+        ip prefix-list NAME permit 1.2.3.0/24
+        ip prefix-list NAME permit 4.5.0.0/16 le 24
+
+    We want:
+        seq 1 permit 1.2.3.0/24
+        seq 2 permit 4.5.0.0/16 le 24
+
+    Lines that don't match the expected shape are silently dropped (defensive
+    — bgpq4 doesn't emit anything else under default flags, but we don't want
+    a stray line to break the switch's parser).
+    """
+    line_prefix = "ip prefix-list " if family == "ipv4" else "ipv6 prefix-list "
+    out = []
+    seq = 1
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("no " + line_prefix):
+            continue
+        if not stripped.startswith(line_prefix):
+            continue
+        # Everything after "ip[v6] prefix-list NAME " — i.e. "permit X/Y [...]"
+        rest = stripped[len(line_prefix):]
+        space_idx = rest.find(" ")
+        if space_idx == -1:
+            continue
+        body = rest[space_idx + 1:].strip()
+        if not body:
+            continue
+        out.append(f"seq {seq} {body}")
+        seq += 1
+    return "\n".join(out) + ("\n" if out else "")
+
+
 def _get_prefix_list(name: str, as_set: str, family: str) -> str:
     key = (name, as_set, family)
     with _cache_lock:
@@ -143,7 +187,8 @@ def _get_prefix_list(name: str, as_set: str, family: str) -> str:
         log.debug("cache hit %s", key)
         return cached
 
-    output = _run_bgpq4(name, as_set, family)
+    raw = _run_bgpq4(name, as_set, family)
+    output = _arista_format(raw, family)
     with _cache_lock:
         _cache[key] = output
     return output

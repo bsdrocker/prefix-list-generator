@@ -58,9 +58,20 @@ All knobs are environment variables (see `docker-compose.yml`):
 | `BGPQ4_SOURCES`      | *(empty)*      | Comma list passed to `bgpq4 -S`, e.g. `RIPE,RADB,APNIC,ARIN,NTTCOM`.    |
 | `BGPQ4_HOST`         | *(empty)*      | IRR host (`bgpq4 -h`). Default = bgpq4 default (`rr.ntt.net`).          |
 | `BGPQ4_AGGREGATE`    | `1`            | Pass `-A` (aggregate prefixes).                                         |
+| `BGPQ4_MAX_LENGTH_V4`| `24`           | Pass `-R <N>` for IPv4. Aggregate but allow more-specifics up to /N. Set to `""` or `0` to omit `-R`. |
+| `BGPQ4_MAX_LENGTH_V6`| `48`           | Same as above for IPv6. Default `/48` matches typical peering policy.   |
 | `BGPQ4_TIMEOUT`      | `60`           | Subprocess timeout, seconds.                                            |
 | `BGPQ4_BIN`          | `bgpq4`        | Path to bgpq4 binary.                                                   |
 | `PORT`               | `8080`         | Listen port.                                                            |
+
+With the defaults you get output like:
+
+```
+ip prefix-list PEER-HE permit 4.7.0.0/16 le 24
+ipv6 prefix-list PEER-HE-V6 permit 2001:470::/32 le 48
+```
+
+i.e. the AS-SET's aggregates plus any more-specifics down to /24 (v4) and /48 (v6).
 
 ## Example response
 

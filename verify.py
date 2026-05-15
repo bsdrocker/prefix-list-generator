@@ -99,11 +99,14 @@ def main() -> int:
     print("4. bgpq4 command construction (dry-run)")
     print("=" * 70)
 
-    def build_cmd(name, as_set, family, aggregate=True, host="", sources="",
-                  binary="bgpq4"):
+    def build_cmd(name, as_set, family, aggregate=True, max_len_v4=None,
+                  max_len_v6=None, host="", sources="", binary="bgpq4"):
         cmd = [binary, FAMILY_FLAGS[family], "-l", name]
         if aggregate:
             cmd.append("-A")
+        max_len = max_len_v4 if family == "ipv4" else max_len_v6
+        if max_len is not None:
+            cmd.extend(["-R", str(max_len)])
         if host:
             cmd.extend(["-h", host])
         if sources:
@@ -113,12 +116,32 @@ def main() -> int:
 
     cmd = build_cmd("PEER-HE", "AS-HURRICANE", "ipv4")
     expect = ["bgpq4", "-4", "-l", "PEER-HE", "-A", "AS-HURRICANE"]
-    if not case("default v4 cmd", cmd == expect, " ".join(cmd)):
+    if not case("default v4 cmd (no -R)", cmd == expect, " ".join(cmd)):
         failures += 1
 
     cmd = build_cmd("PEER-HE-V6", "AS-HURRICANE", "ipv6")
     expect = ["bgpq4", "-6", "-l", "PEER-HE-V6", "-A", "AS-HURRICANE"]
-    if not case("default v6 cmd", cmd == expect, " ".join(cmd)):
+    if not case("default v6 cmd (no -R)", cmd == expect, " ".join(cmd)):
+        failures += 1
+
+    # The new feature: -R 24 for v4, -R 48 for v6, family-aware.
+    cmd = build_cmd("PEER-HE", "AS-HURRICANE", "ipv4",
+                    max_len_v4=24, max_len_v6=48)
+    expect = ["bgpq4", "-4", "-l", "PEER-HE", "-A", "-R", "24", "AS-HURRICANE"]
+    if not case("v4 with -R 24", cmd == expect, " ".join(cmd)):
+        failures += 1
+
+    cmd = build_cmd("PEER-HE-V6", "AS-HURRICANE", "ipv6",
+                    max_len_v4=24, max_len_v6=48)
+    expect = ["bgpq4", "-6", "-l", "PEER-HE-V6", "-A", "-R", "48", "AS-HURRICANE"]
+    if not case("v6 with -R 48 (family-aware: picks v6 value)",
+                cmd == expect, " ".join(cmd)):
+        failures += 1
+
+    # And: empty/None max_len should NOT add -R.
+    cmd = build_cmd("PL", "AS-FOO", "ipv4", max_len_v4=None, max_len_v6=48)
+    if not case("empty max_len_v4 omits -R for v4",
+                "-R" not in cmd, " ".join(cmd)):
         failures += 1
 
     cmd = build_cmd(
@@ -153,10 +176,12 @@ def main() -> int:
 ip prefix-list EXAMPLE permit 192.0.2.0/24
 ip prefix-list EXAMPLE permit 198.51.100.0/24
 ip prefix-list EXAMPLE permit 203.0.113.0/24 le 25
+ip prefix-list EXAMPLE permit 4.7.0.0/16 le 24
 """
     sample_v6 = """no ipv6 prefix-list EXAMPLE-V6
 ipv6 prefix-list EXAMPLE-V6 permit 2001:db8::/32
 ipv6 prefix-list EXAMPLE-V6 permit 2001:db8:1::/48 le 64
+ipv6 prefix-list EXAMPLE-V6 permit 2001:470::/32 le 48
 """
 
     # Arista EOS prefix-list line grammar (per the Configuration Guide):
@@ -200,6 +225,52 @@ ipv6 prefix-list EXAMPLE-V6 permit 2001:db8:1::/48 le 64
         bool(AS_RE.match("RIPE::AS-FOO")),
     ):
         failures += 1
+
+    print()
+    print("=" * 70)
+    print("7. _parse_max_len env-var validation")
+    print("=" * 70)
+    # Extract the _parse_max_len function from app.py and exec it without
+    # triggering the flask / cachetools imports at module top level.
+    tree = ast.parse(SRC)
+    fn_src = None
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_parse_max_len":
+            fn_src = ast.get_source_segment(SRC, node)
+            break
+    if fn_src is None:
+        case("_parse_max_len present", False)
+        failures += 1
+    else:
+        ns = {}
+        exec(fn_src, ns)
+        parse = ns["_parse_max_len"]
+
+        # Valid: returns int.
+        if not case("'24' for V4 -> 24", parse("24", "V4", 32) == 24):
+            failures += 1
+        if not case("'48' for V6 -> 48", parse("48", "V6", 128) == 48):
+            failures += 1
+        if not case("'128' for V6 -> 128", parse("128", "V6", 128) == 128):
+            failures += 1
+        # Empty / '0' -> None (omit -R).
+        if not case("'' -> None", parse("", "V4", 32) is None):
+            failures += 1
+        if not case("'0' -> None", parse("0", "V4", 32) is None):
+            failures += 1
+        # Whitespace tolerated.
+        if not case("'  24  ' -> 24", parse("  24  ", "V4", 32) == 24):
+            failures += 1
+        # Out-of-range -> SystemExit (fail loud at config time).
+        for bad_input, family, vmax in [("33", "V4", 32), ("129", "V6", 128),
+                                        ("-1", "V4", 32), ("nope", "V4", 32)]:
+            try:
+                parse(bad_input, family, vmax)
+                ok = False
+            except SystemExit:
+                ok = True
+            if not case(f"rejects {bad_input!r} for {family}", ok):
+                failures += 1
 
     print()
     print("=" * 70)

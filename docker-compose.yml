@@ -18,6 +18,11 @@ services:
       BGPQ4_HOST: ""
       # Aggregate prefixes (-A). "1" or "0".
       BGPQ4_AGGREGATE: "1"
+      # Max prefix length for -R, per family. bgpq4 expands longer specifics
+      # into "le N" form, so -R 24 on an aggregated v4 list permits anything
+      # from the aggregate up to /24. Set to "" or "0" to omit -R entirely.
+      BGPQ4_MAX_LENGTH_V4: "24"
+      BGPQ4_MAX_LENGTH_V6: "48"
       # Subprocess timeout (seconds).
       BGPQ4_TIMEOUT: "60"
       # gunicorn tuning

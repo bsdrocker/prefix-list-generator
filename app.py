@@ -40,6 +40,32 @@ BGPQ4_BIN = os.environ.get("BGPQ4_BIN", "bgpq4")
 # Subprocess timeout in seconds.
 BGPQ4_TIMEOUT = int(os.environ.get("BGPQ4_TIMEOUT", "60"))
 
+
+def _parse_max_len(raw: str, family_label: str, valid_max: int):
+    """Validate BGPQ4_MAX_LENGTH_* env vars. Empty/'0' -> None (omit -R)."""
+    raw = (raw or "").strip()
+    if not raw or raw == "0":
+        return None
+    try:
+        n = int(raw)
+    except ValueError:
+        raise SystemExit(
+            f"BGPQ4_MAX_LENGTH_{family_label}: expected integer, got {raw!r}"
+        )
+    if n < 1 or n > valid_max:
+        raise SystemExit(
+            f"BGPQ4_MAX_LENGTH_{family_label}: must be 1..{valid_max}, got {n}"
+        )
+    return n
+
+
+# Max prefix length for bgpq4 -R, per family. bgpq4 expands longer specifics
+# into `le N` form, so on an aggregated v4 list `-R 24` permits anything from
+# the aggregate up to /24 — the usual policy for peer prefix-lists. Set the
+# env var to empty or "0" to omit -R and use bgpq4's default (no le clause).
+MAX_LENGTH_V4 = _parse_max_len(os.environ.get("BGPQ4_MAX_LENGTH_V4", "24"), "V4", 32)
+MAX_LENGTH_V6 = _parse_max_len(os.environ.get("BGPQ4_MAX_LENGTH_V6", "48"), "V6", 128)
+
 # Logging
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 log = logging.getLogger("bgpq4-arista")
@@ -77,6 +103,9 @@ def _run_bgpq4(name: str, as_set: str, family: str) -> str:
     cmd = [BGPQ4_BIN, FAMILY_FLAGS[family], "-l", name]
     if AGGREGATE:
         cmd.append("-A")
+    max_len = MAX_LENGTH_V4 if family == "ipv4" else MAX_LENGTH_V6
+    if max_len is not None:
+        cmd.extend(["-R", str(max_len)])
     if IRR_HOST:
         cmd.extend(["-h", IRR_HOST])
     if IRR_SOURCES:

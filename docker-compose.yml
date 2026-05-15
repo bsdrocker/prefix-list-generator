@@ -1,0 +1,31 @@
+services:
+  bgpq4-arista:
+    build: .
+    image: bgpq4-arista:latest
+    container_name: bgpq4-arista
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Cache TTL (seconds). Default 1 hour.
+      BGPQ4_CACHE_TTL: "3600"
+      # Max cached prefix-lists.
+      BGPQ4_CACHE_MAX: "1024"
+      # IRR sources (comma-separated). Empty -> bgpq4 default.
+      # e.g. "RIPE,RADB,APNIC,ARIN,LEVEL3,NTTCOM"
+      BGPQ4_SOURCES: ""
+      # IRR host. Empty -> bgpq4 default (rr.ntt.net).
+      BGPQ4_HOST: ""
+      # Aggregate prefixes (-A). "1" or "0".
+      BGPQ4_AGGREGATE: "1"
+      # Subprocess timeout (seconds).
+      BGPQ4_TIMEOUT: "60"
+      # gunicorn tuning
+      GUNICORN_WORKERS: "2"
+      GUNICORN_THREADS: "4"
+      LOG_LEVEL: "INFO"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health',timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

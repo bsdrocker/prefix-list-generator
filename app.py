@@ -3,8 +3,9 @@ bgpq4 -> Arista prefix-list HTTP front end.
 
 Returns plain-text Arista EOS prefix-list *body* suitable for use with:
 
-    ip prefix-list NAME
-       source http://<this-server>:<port>/arista/NAME/AS-SET
+    ip prefix-list NAME source http:<this-server>:<port>/arista/NAME/AS-SET
+
+(note the Arista CLI quirk — `http:` with a single colon, not `http://`).
 
 When Arista sources a prefix-list over HTTP, the switch already knows the
 list name (declared by the parent `ip prefix-list NAME` command), so the

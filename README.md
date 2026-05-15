@@ -3,7 +3,7 @@
 A tiny Flask service that wraps [`bgpq4`](https://github.com/bgp/bgpq4) and
 returns prefix-list entries in the **`seq N permit X/Y [le N]` body format**
 that Arista EOS expects when sourcing a prefix-list over HTTP
-(`ip prefix-list NAME` → `source http://...`).
+(`ip prefix-list NAME source http:...`).
 
 Similar in spirit to [bgpq-proxy](https://github.com/peering-manager/bgpq-proxy),
 but tailored to Arista's source-http loader instead of returning JSON.
@@ -93,13 +93,17 @@ On the switch:
 
 ```
 ! IPv4
-ip prefix-list PEER-HE
-   source http://bgpq4-arista.example.net:8080/arista/PEER-HE/AS-HURRICANE
+ip prefix-list PEER-HE source http:bgpq4-arista.example.net:8080/arista/PEER-HE/AS-HURRICANE
 !
 ! IPv6
-ipv6 prefix-list PEER-HE-V6
-   source http://bgpq4-arista.example.net:8080/arista/PEER-HE-V6/AS-HURRICANE?family=ipv6
+ipv6 prefix-list PEER-HE-V6 source http:bgpq4-arista.example.net:8080/arista/PEER-HE-V6/AS-HURRICANE?family=ipv6
 ```
+
+> **Note:** Arista's CLI uses `http:` (single colon, no `//`) — it's not a
+> standard URL form. The whole declaration is a single line; there's no
+> indented `source` sub-command. The `http:` prefix is just how EOS spells
+> "fetch this via HTTP." Use `https:` (same one-colon syntax) if you put a
+> TLS terminator in front of the service.
 
 Then refresh on demand:
 

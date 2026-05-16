@@ -23,15 +23,22 @@ goes straight into the switch's prefix-list when refreshed.
 ## Endpoints
 
 ```
-GET /arista/<prefix-list-name>/<as-set>[?family=ipv4|ipv6]
+GET /arista/as_set/<as-set>        # IPv4 — expand an AS-SET via IRR
+GET /arista/as_set/<as-set>/v6     # IPv6
+GET /arista/asn/<asn>              # IPv4 — prefixes originated by a single ASN
+GET /arista/asn/<asn>/v6           # IPv6
 GET /health
 GET /
 ```
 
-Both `<prefix-list-name>` and `<as-set>` are validated against conservative
-regexes before being passed to `bgpq4`.
+Notes:
 
-`family` defaults to `ipv4`. Use `family=ipv6` for IPv6.
+- `<as-set>` is validated against a conservative IRR-object regex.
+- `<asn>` accepts either `65000` or `AS65000` (case-insensitive); the value
+  is normalized to `AS<n>` before being handed to `bgpq4`. Range-checked
+  against the 32-bit AS space (`1..4294967295`).
+- Family lives in the path (`/v6` suffix), not a query string — `?` is a glob
+  character in zsh and tripped people up.
 
 ## Running
 
@@ -39,8 +46,10 @@ regexes before being passed to `bgpq4`.
 
 ```sh
 docker compose up -d --build
-curl http://localhost:8080/arista/PEER-HE/AS-HURRICANE
-curl 'http://localhost:8080/arista/PEER-HE-V6/AS-HURRICANE?family=ipv6'
+curl http://localhost:8080/arista/as_set/AS-HURRICANE
+curl http://localhost:8080/arista/as_set/AS-HURRICANE/v6
+curl http://localhost:8080/arista/asn/AS6939
+curl http://localhost:8080/arista/asn/6939/v6
 ```
 
 ### Bare metal (dev)
@@ -75,7 +84,7 @@ more-specifics down to /24 (v4) and /48 (v6).
 ## Example response
 
 ```
-$ curl -s http://localhost:8080/arista/PEER-HE/AS-HURRICANE | head
+$ curl -s http://localhost:8080/arista/as_set/AS-HURRICANE | head
 seq 1 permit 4.7.0.0/16 le 24
 seq 2 permit 5.39.96.0/19 le 24
 seq 3 permit 8.7.198.0/24
@@ -85,18 +94,22 @@ seq 4 permit 12.0.0.0/8 le 24
 
 Note the absence of `ip prefix-list NAME` on each line — that's intentional.
 Arista's source-http loader prepends it from the parent declaration, so the
-body returned here must contain only the entries.
+body returned here must contain only the entries. The prefix-list name lives
+only on the switch; the URL no longer carries it.
 
 ## Arista EOS config example
 
 On the switch:
 
 ```
-! IPv4
-ip prefix-list PEER-HE source http:bgpq4-arista.example.net:8080/arista/PEER-HE/AS-HURRICANE
+! IPv4 — AS-SET
+ip prefix-list PEER-HE source http:bgpq4-arista.example.net:8080/arista/as_set/AS-HURRICANE
 !
-! IPv6
-ipv6 prefix-list PEER-HE-V6 source http:bgpq4-arista.example.net:8080/arista/PEER-HE-V6/AS-HURRICANE?family=ipv6
+! IPv6 — AS-SET
+ipv6 prefix-list PEER-HE-V6 source http:bgpq4-arista.example.net:8080/arista/as_set/AS-HURRICANE/v6
+!
+! IPv4 — single ASN (prefixes originated by AS6939)
+ip prefix-list HE-ORIG source http:bgpq4-arista.example.net:8080/arista/asn/AS6939
 ```
 
 > **Note:** Arista's CLI uses `http:` (single colon, no `//`) — it's not a
@@ -113,11 +126,6 @@ switch# ip prefix-list PEER-HE refresh
 
 …or schedule a periodic refresh via EOS event-handler / scheduler if you want
 the switch to pull updates automatically.
-
-> Make sure the `<prefix-list-name>` in the URL exactly matches the
-> `ip prefix-list NAME` you defined on the switch — bgpq4 emits the name on
-> every line, and Arista will reject lines whose name doesn't match the
-> prefix-list being sourced.
 
 ## Notes / caveats
 
